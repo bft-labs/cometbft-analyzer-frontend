@@ -1,44 +1,61 @@
 export function processApiEvents(apiData: ApiEventResponse[] | unknown): { events: CanvasEvent[]; nodes: string[] } {
   const nodeSet = new Set<string>();
 
-  // Handle case where API returns an object with data array
-  let eventsArray: any[] = [];
+  // Normalize to an array of ApiEventResponse
+  let eventsArray: ApiEventResponse[] = [];
   if (Array.isArray(apiData)) {
-    eventsArray = apiData as any[];
+    eventsArray = apiData as ApiEventResponse[];
   } else if (
     apiData &&
     typeof apiData === "object" &&
     "data" in apiData &&
     Array.isArray((apiData as { data: unknown }).data)
   ) {
-    eventsArray = (apiData as { data: any[] }).data;
+    eventsArray = (apiData as { data: ApiEventResponse[] }).data;
   } else if (
     apiData &&
     typeof apiData === "object" &&
     "events" in apiData &&
     Array.isArray((apiData as { events: unknown }).events)
   ) {
-    eventsArray = (apiData as { events: any[] }).events;
+    eventsArray = (apiData as { events: ApiEventResponse[] }).events;
   } else {
     console.warn("Unexpected API response format:", apiData);
     return { events: [], nodes: [] };
   }
 
   const events: CanvasEvent[] =
-    eventsArray?.map((raw) => {
-      const item = raw as ApiEventResponse;
+    eventsArray.map((item: ApiEventResponse) => {
       if (item.nodeId) nodeSet.add(item.nodeId);
-      if ((item as any).senderPeerId) nodeSet.add((item as any).senderPeerId as string);
+      if (item.senderPeerId) nodeSet.add(item.senderPeerId);
 
-      // Explicitly map backend eventType -> frontend type; keep other fields as-is
+      const legacyType = (item as unknown as { type?: string }).type;
+      const type = item.eventType ?? legacyType ?? "unknown";
+
       const frontendEvent: CanvasEvent = {
-        ...(item as unknown as Record<string, any>),
-        type: (item as any).eventType ?? (item as any).type, // prefer eventType, fallback to legacy 'type'
+        type,
         timestamp: new Date(item.timestamp),
-      } as CanvasEvent;
+        nodeId: item.nodeId,
+        validatorAddress: item.validatorAddress,
+        vote: item.vote,
+        proposal: item.proposal,
+        part: item.part,
+        height: item.height,
+        round: item.round,
+        currentHeight: item.currentHeight,
+        currentRound: item.currentRound,
+        currentStep: item.currentStep,
+        hash: item.hash,
+        proposer: item.proposer,
+        status: item.status,
+        senderPeerId: item.senderPeerId,
+        sentTime: item.sentTime,
+        receivedTime: item.receivedTime,
+        latency: item.latency,
+      };
 
       return frontendEvent;
-    }) || [];
+    });
 
   return { events, nodes: Array.from(nodeSet) };
 }

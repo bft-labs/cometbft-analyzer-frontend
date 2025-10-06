@@ -95,7 +95,7 @@ export function DetailedPerformanceTable({ data, messageTypes }: DetailedPerform
         {/* Tab Navigation */}
         <div className="border-b border-gray-700">
           <nav className="flex space-x-8" aria-label="Tabs">
-            {messageTypeData.map(({ messageType, data: typeData }) => (
+            {messageTypeData.map(({ messageType }) => (
               <button
                 key={messageType}
                 onClick={() => setActiveTab(messageType)}

@@ -228,9 +228,9 @@ export default function SimulationDetailPage() {
       } as typeof simulation;
       setSimulation(transformedSimulation);
       setSelectedFiles([]);
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error("Upload failed:", err);
-      const message = err?.message || "Upload failed. Please check server logs.";
+      const message = err instanceof Error ? err.message : "Upload failed. Please check server logs.";
       alert(message);
     } finally {
       setIsUploading(false);
