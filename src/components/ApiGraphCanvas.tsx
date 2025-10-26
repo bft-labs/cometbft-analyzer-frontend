@@ -1,17 +1,17 @@
 /**
  * @file ApiGraphCanvas.tsx
  * @description
- * 이 파일은 CometBFT 합의 과정의 시각화를 위한 React 컴포넌트를 정의합니다.
- * D3.js와 HTML Canvas를 사용하여 P2P 메시지(화살표)와 노드 상태 변경(점)을 시각적으로 표현합니다.
- * 사용자는 이 그래프를 통해 시간 경과에 따른 노드 간의 상호작용과 각 노드의 상태 변화를 직관적으로 파악할 수 있습니다.
+ * React canvas for visualizing CometBFT consensus.
+ * Renders P2P messages as arrows and node state changes as points using D3.js + HTML Canvas.
+ * Users can inspect interactions over time and filter by event types and steps.
  *
- * 주요 기능:
- * 1.  **데이터 시각화**: API로부터 받은 이벤트 데이터를 기반으로 노드와 이벤트(메시지, 상태 변경)를 캔버스에 렌더링합니다.
- * 2.  **상호작용**:
- *     -   **툴팁**: 마우스를 화살표나 점 위로 가져가면 상세 정보(이벤트 종류, 시간, 노드 등)를 보여줍니다.
- *     -   **브러싱**: 사용자가 캔버스에서 특정 시간 범위를 드래그하여 선택(브러싱)하면, 해당 시간대의 데이터만 필터링하여 부모 컴포넌트에 알립니다.
- * 3.  **필터링 연동**: 부모 컴포넌트에서 선택된 이벤트 유형(p2pEvents, steps)에 따라 표시되는 데이터를 동적으로 필터링합니다.
- * 4.  **반응형 디자인**: 브라우저 창 크기가 변경되면 캔버스 크기와 스케일을 자동으로 조절하여 다시 렌더링합니다.
+ * Key features:
+ * 1. Data visualization: Render nodes and events from API data (messages, state changes).
+ * 2. Interactions:
+ *    - Tooltip: Show details when hovering over arrows or points.
+ *    - Brushing: Drag to select a time range; callback reports the selected window.
+ * 3. Filtering: Respect selected P2P event types and consensus steps from parent.
+ * 4. Responsive: Recompute scales and redraw on resize.
  */
 "use client";
 
@@ -19,9 +19,9 @@ import React, { useRef, useEffect, useState, useCallback } from "react";
 import * as d3 from "d3";
 import { p2pEvents, stepColorMap } from "./ApiStepLegend";
 /**
- * GraphCanvas 컴포넌트
- * @param {GraphCanvasProps} props - 컴포넌트 props
- * @returns {React.JSX.Element} 렌더링될 JSX 요소
+ * GraphCanvas component
+ * @param {GraphCanvasProps} props - component props
+ * @returns {React.JSX.Element} rendered JSX element
  */
 function GraphCanvas({
   data,
@@ -34,53 +34,53 @@ function GraphCanvas({
   viewportEnd,
   zoomLevel,
 }: GraphCanvasProps): React.JSX.Element {
-  // DOM 요소에 대한 참조(ref)
-  const canvasRef = useRef<HTMLCanvasElement | null>(null); // 캔버스 요소
+  // DOM refs
+  const canvasRef = useRef<HTMLCanvasElement | null>(null); // canvas element
 
-  // 툴팁 상태 관리
+  // Tooltip state
   const [tooltip, setTooltip] = useState<{
     content: CanvasArrowData | StateChangePoint | null;
     position: { x: number; y: number };
   } | null>(null);
 
-  // 그래프 여백 설정
+  // Graph margins
   const [margin] = useState({ top: 50, right: 50, bottom: 50, left: 80 });
 
-  // D3 스케일 및 캔버스 컨텍스트에 대한 참조
-  const contextRef = useRef<CanvasRenderingContext2D | null>(null); // 캔버스 2D 렌더링 컨텍스트
-  const xScaleRef = useRef<d3.ScaleLinear<number, number> | null>(null); // X축 스케일 (시간)
-  const yScaleRef = useRef<d3.ScaleBand<string> | null>(null); // Y축 스케일 (노드)
+  // D3 scales and canvas context refs
+  const contextRef = useRef<CanvasRenderingContext2D | null>(null); // 2D context
+  const xScaleRef = useRef<d3.ScaleLinear<number, number> | null>(null); // X scale (time)
+  const yScaleRef = useRef<d3.ScaleBand<string> | null>(null); // Y scale (nodes)
 
-  // 시각화할 데이터를 가공하여 저장하는 참조
-  // raw data를 매번 계산하지 않고, data prop이 변경될 때만 계산하여 성능 최적화
-  const arrowDataRef = useRef<CanvasArrowData[]>([]); // 메시지(send/receive)를 나타내는 화살표 데이터
-  const pointDataRef = useRef<StateChangePoint[]>([]); // 상태 변경을 나타내는 점 데이터
+  // Cached, processed data
+  // We recompute only when data changes for performance
+  const arrowDataRef = useRef<CanvasArrowData[]>([]); // P2P arrows (send/receive)
+  const pointDataRef = useRef<StateChangePoint[]>([]); // state change points
 
-  // 브러싱 상태 관리
-  const [isBrushing, setIsBrushing] = useState(false); // 현재 브러싱 중인지 여부
-  const [brushStart, setBrushStart] = useState<number | null>(null); // 브러싱 시작점의 X 좌표
-  const [brushEnd, setBrushEnd] = useState<number | null>(null); // 브러싱 끝점의 X 좌표
+  // Brushing state
+  const [isBrushing, setIsBrushing] = useState(false); // currently brushing
+  const [brushStart, setBrushStart] = useState<number | null>(null); // X start
+  const [brushEnd, setBrushEnd] = useState<number | null>(null); // X end
 
   /**
    * @function drawAll
-   * @description 캔버스의 모든 요소를 그리는 메인 렌더링 함수.
-   * @param {CanvasArrowData | StateChangePoint | null} highlightObj - 강조해서 표시할 객체 (마우스 호버 시). null이면 강조 없음.
+   * @description Main render method for all canvas elements.
+   * @param {CanvasArrowData | StateChangePoint | null} highlightObj - object to highlight on hover, or null
    */
   const drawAll = (highlightObj: CanvasArrowData | StateChangePoint | null): void => {
     const canvasEl = canvasRef.current;
     const context = contextRef.current;
     if (!canvasEl || !context) return;
 
-    // DPI 스케일링 처리 (고해상도 디스플레이에서 선명하게 보이도록)
+    // Handle devicePixelRatio for crisp rendering
     const { width, height } = canvasEl.getBoundingClientRect();
     const dpr = window.devicePixelRatio || 1;
     context.setTransform(dpr, 0, 0, dpr, 0, 0);
 
-    // 전체 캔버스 배경색으로 채우기 (margin 포함)
+    // Fill background (including margins)
     context.fillStyle = "#2E364D";
     context.fillRect(0, 0, width, height);
 
-    // 여백(margin) 적용
+    // Apply margins
     context.translate(margin.left, margin.top);
 
     const innerWidth = width - margin.left - margin.right;
@@ -91,7 +91,7 @@ function GraphCanvas({
 
     if (!xScale || !yScale) return;
 
-    // 부모 컴포넌트에서 선택된 스텝만 필터링 + viewport 범위 필터링
+    // Filter by selected steps and current viewport range
     const [d0, d1] = xScale.domain();
     const scArr = pointDataRef.current.filter((pt) => {
       if (!selectedSteps.includes(pt.type || "")) return false;
@@ -99,7 +99,7 @@ function GraphCanvas({
       return tsMs >= d0 && tsMs <= d1;
     });
 
-    // proposeStep 이고 isOurTurn === true 인 지점에 세로선(점선) + 하단 라벨(블록넘버, 타임스탬프) 표시
+    // For proposeStep with isOurTurn === true, draw a vertical dashed line + bottom labels (block height, ms)
     {
       context.save();
       context.strokeStyle = "#888";
@@ -118,7 +118,7 @@ function GraphCanvas({
         .forEach((sc) => {
           const tsMs = sc.timestamp instanceof Date ? sc.timestamp.getTime() : Number(sc.timestamp);
           const x = xScale(tsMs);
-          // 점선 설정
+          // dashed line
           context.setLineDash([5, 4]);
           context.lineWidth = 1;
           context.beginPath();
@@ -126,17 +126,17 @@ function GraphCanvas({
           context.lineTo(x, innerHeight);
           context.stroke();
 
-          // 하단 라벨: 블록넘버와 밀리세컨드만 표시
+          // Bottom labels: block height (top) and milliseconds (bottom)
           const heightLabel = sc.height ?? sc.currentHeight;
           const milliseconds = new Date(tsMs).getUTCMilliseconds();
 
-          context.setLineDash([]); // 텍스트 그리기 전에 점선 해제
-          context.font = "10px sans-serif"; // 글씨 크기 줄임
+          context.setLineDash([]); // reset dash before text
+          context.font = "10px sans-serif"; // smaller font
 
           if (heightLabel !== undefined) {
-            // 블록넘버 (위쪽)
+            // Block height (top)
             context.fillText(`${heightLabel}`, x, innerHeight + 12);
-            // 밀리세컨드 (아래쪽)
+            // Milliseconds (bottom)
             context.fillText(`${milliseconds}ms`, x, innerHeight + 24);
           }
         });
@@ -144,7 +144,7 @@ function GraphCanvas({
       context.restore();
     }
 
-    // 1. 노드 라인 및 레이블 그리기
+    // 1) Node horizontal lines and labels
     context.strokeStyle = "#555";
     context.fillStyle = "#ccc";
     context.textBaseline = "middle";
@@ -156,12 +156,12 @@ function GraphCanvas({
       context.beginPath();
       context.moveTo(0, yC);
       context.lineTo(innerWidth, yC);
-      context.stroke(); // 노드별 수평선
-      context.fillText(nd.slice(0, 6), -10, yC); // 노드 이름
+      context.stroke(); // node horizontal line
+      context.fillText(nd.slice(0, 6), -10, yC); // node label
     });
 
-    // 2. P2P 메시지(화살표) 그리기
-    // 부모 컴포넌트에서 선택된 이벤트 유형에 해당하는 `type`들을 Set으로 만들어 필터링 성능을 최적화합니다.
+    // 2) Draw P2P message arrows
+    // Build a Set of selected message types for fast filtering
     const selectedMsgTypes = new Set(
       p2pEvents.filter((event) => selectedEvents.includes(event.label)).map((event) => event.type)
     );
@@ -176,7 +176,7 @@ function GraphCanvas({
 
     arrowArr.forEach((ar) => {
       const isHighlight = highlightObj === ar;
-      // 테이블에서 선택된 이벤트와 매칭되는지 확인 (정확한 객체 매칭)
+      // Check if this arrow matches the event selected in the table (object/field equality)
       const matchingCanvasEvent =
         selectedTableEvent &&
         data.find(
@@ -191,41 +191,41 @@ function GraphCanvas({
         matchingCanvasEvent.type === ar.type &&
         Math.abs(matchingCanvasEvent.timestamp.getTime() - ar.timestamp.getTime()) < 50;
 
-      let arrowColor = "#65AFFF"; // 기본 색상
+      let arrowColor = "#65AFFF"; // default color
       const matchedEvent = p2pEvents.find((event) => event.type === ar.type);
       if (matchedEvent) {
         arrowColor = matchedEvent.color;
       }
-      if (isHighlight) arrowColor = "#ff9800"; // 마우스 호버 시 오렌지색
-      if (isSelectedFromTable) arrowColor = "#00ff00"; // 테이블 선택 시 녹색
+      if (isHighlight) arrowColor = "#ff9800"; // highlight on hover
+      if (isSelectedFromTable) arrowColor = "#00ff00"; // highlight when selected in table
 
       const x1 = xScale(ar.sendTime);
       const x2 = xScale(ar.recvTime);
       const y1 = yScale(ar.fromNode)! + yScale.bandwidth() / 2;
       const y2 = yScale(ar.toNode)! + yScale.bandwidth() / 2;
 
-      // 화살표 선 그라데이션 설정
-      const gradient = context.createLinearGradient(x2, y2, x1, y1); // 머리(x2,y2)에서 꼬리(x1,y1) 방향으로 그라데이션
-      gradient.addColorStop(0, arrowColor); // 머리 부분은 불투명
-      gradient.addColorStop(1, arrowColor + "00"); // 꼬리 부분은 투명
+      // Gradient stroke from head (opaque) to tail (transparent)
+      const gradient = context.createLinearGradient(x2, y2, x1, y1);
+      gradient.addColorStop(0, arrowColor);
+      gradient.addColorStop(1, arrowColor + "00");
 
-      context.strokeStyle = gradient; // 선 색상을 그라데이션으로 설정
-      context.fillStyle = arrowColor; // 화살표 머리 색상은 기존대로 유지
-      context.lineWidth = 2; // 화살표 선 두께 설정
+      context.strokeStyle = gradient;
+      context.fillStyle = arrowColor;
+      context.lineWidth = 2;
 
-      // 화살표 선
+      // Arrow line
       context.beginPath();
       context.moveTo(x1, y1);
       context.lineTo(x2, y2);
       context.stroke();
 
-      // 화살표 머리 그리기
+      // Arrow head
       const dx = x2 - x1;
       const dy = y2 - y1;
       const len = Math.sqrt(dx * dx + dy * dy);
       if (len >= 1) {
-        const arrowSize = 4; // 화살표 머리 크기 (높이)
-        const angle = Math.PI / 3; // 화살표 머리 각도 (너비)
+        const arrowSize = 4; // head size
+        const angle = Math.PI / 3; // head angle
         const bx = x2 - (dx / len) * arrowSize;
         const by = y2 - (dy / len) * arrowSize;
         const cos = Math.cos(angle);
@@ -243,10 +243,10 @@ function GraphCanvas({
       }
     });
 
-    // 3. 상태 변경(점) 그리기
+    // 3) Draw state change points
     scArr.forEach((pt) => {
       const isHighlight = highlightObj === pt;
-      // 테이블에서 선택된 이벤트와 매칭되는지 확인 (정확한 객체 매칭)
+      // Check if this point matches the event selected in the table
       const matchingCanvasEvent =
         selectedTableEvent &&
         data.find(
@@ -264,46 +264,45 @@ function GraphCanvas({
 
       const current = pt.type ?? "";
 
-      let color = "#cf6679"; // 기본 색상
+      let color = "#cf6679"; // default color
 
-      color = stepColorMap[current] || "#000000"; // 스텝별 색상 매핑
+      color = stepColorMap[current] || "#000000"; // step color mapping
 
-      if (isHighlight) color = "#ff9800"; // 마우스 호버 시 오렌지색
-      if (isSelectedFromTable) color = "#00ff00"; // 테이블 선택 시 녹색
+      if (isHighlight) color = "#ff9800"; // hover
+      if (isSelectedFromTable) color = "#00ff00"; // selected
 
       const cx = xScale(pt.timestamp);
       const cy = yScale(pt.node)! + yScale.bandwidth() / 2;
 
-      // isOurTurn이 true인 proposeStep의 경우 토성 모양으로, 아니면 일반 점으로 렌더링
+      // Render Saturn-like marker when proposeStep && isOurTurn, otherwise a regular dot
       if (pt.type === "proposeStep" && pt.isOurTurn) {
-        // 토성 모양 렌더링
-        // 1. 바깥쪽 링 그리기 (기존 점 지름과 동일)
+        // Saturn-style: outer ring
         context.beginPath();
         context.arc(cx, cy, 6, 0, 2 * Math.PI);
         context.strokeStyle = color;
-        context.lineWidth = 1.5; // 링 두께
+        context.lineWidth = 1.5; // ring thickness
         context.stroke();
 
-        // 2. 안쪽 점 그리기 (링과 겹치지 않게 작게)
+        // Inner dot
         context.beginPath();
         context.arc(cx, cy, 2.5, 0, 2 * Math.PI);
         context.fillStyle = color;
         context.fill();
       } else {
-        // 일반 점 렌더링
+        // Regular dot
         context.beginPath();
-        context.arc(cx, cy, 6, 0, 2 * Math.PI); // 원으로 표시
+        context.arc(cx, cy, 6, 0, 2 * Math.PI);
         context.fillStyle = color;
         context.fill();
       }
     });
 
-    // 4. 브러싱 영역 그리기
+    // 4) Draw brushing region
     if (isBrushing && brushStart !== null && brushEnd !== null) {
       const xMin = Math.min(brushStart, brushEnd);
       const xMax = Math.max(brushStart, brushEnd);
       context.save();
-      context.fillStyle = "rgba(100, 100, 255, 0.3)"; // 반투명 파란색
+      context.fillStyle = "rgba(100, 100, 255, 0.3)"; // semi-transparent blue
       context.fillRect(xMin, 0, xMax - xMin, innerHeight);
       context.restore();
     }
@@ -311,7 +310,7 @@ function GraphCanvas({
 
   /**
    * @function handleMouseMove
-   * @description 마우스 이동 이벤트를 처리하여 툴팁 표시 및 브러싱을 업데이트.
+   * @description Mouse move handler: tooltip and brushing updates
    */
   const handleMouseMove = (e: React.MouseEvent<HTMLCanvasElement>): void => {
     if (!canvasRef.current) return;
@@ -319,7 +318,7 @@ function GraphCanvas({
     const mouseX = e.clientX - rect.left - margin.left;
     const mouseY = e.clientY - rect.top - margin.top;
 
-    // 브러싱 중일 경우, 브러시 끝점을 업데이트하고 다시 그림
+    // Update brush end and redraw while brushing
     if (isBrushing) {
       setBrushEnd(mouseX);
       drawAll(null);
@@ -330,11 +329,11 @@ function GraphCanvas({
     const yScale = yScaleRef.current;
     if (!xScale || !yScale) return;
 
-    // 마우스 위치에서 가장 가까운 객체(화살표 또는 점) 찾기 (Hit Detection)
+    // Hit detection: find nearest arrow/point to the cursor
     let found: CanvasArrowData | StateChangePoint | null = null;
-    let minDist = 10; // 10px 이내의 객체만 감지
+    let minDist = 10; // only detect within 10px
 
-    // 화살표와의 거리 계산
+    // Distance to arrows
     const selectedMsgTypes = new Set(
       p2pEvents.filter((event) => selectedEvents.includes(event.label)).map((event) => event.type)
     );
@@ -350,7 +349,7 @@ function GraphCanvas({
       const x2 = xScale(ar.recvTime);
       const y1 = yScale(ar.fromNode)! + yScale.bandwidth() / 2;
       const y2 = yScale(ar.toNode)! + yScale.bandwidth() / 2;
-      // 점과 선분 사이의 최단 거리 계산
+      // Shortest distance from point to segment
       const l2 = (x2 - x1) ** 2 + (y2 - y1) ** 2;
       let t = ((mouseX - x1) * (x2 - x1) + (mouseY - y1) * (y2 - y1)) / l2;
       t = Math.max(0, Math.min(1, t));
@@ -363,7 +362,7 @@ function GraphCanvas({
       }
     }
 
-    // 점과의 거리 계산 (더 가까운 점이 있으면 교체)
+    // Distance to points
     if (!found) {
       const scArr = pointDataRef.current.filter((pt) => {
         if (!selectedSteps.includes(pt.type || "")) return false;
@@ -382,10 +381,10 @@ function GraphCanvas({
       }
     }
 
-    // 툴팁 처리 - 고정 위치에 표시
+    // Tooltip handling (fixed position)
     if (found) {
-      setTooltip({ content: found, position: { x: 0, y: 0 } }); // position은 사용하지 않음
-      drawAll(found); // 찾은 객체를 강조하여 다시 그림
+      setTooltip({ content: found, position: { x: 0, y: 0 } }); // fixed position; coordinates not used
+      drawAll(found); // redraw with highlight
     } else {
       setTooltip(null);
       drawAll(null);
@@ -394,7 +393,7 @@ function GraphCanvas({
 
   /**
    * @function handleMouseLeave
-   * @description 마우스가 캔버스를 벗어났을 때 툴팁을 숨기고 브러싱을 취소.
+   * @description Hide tooltip and cancel brushing when leaving the canvas
    */
   const handleMouseLeave = (): void => {
     setTooltip(null);
@@ -408,7 +407,7 @@ function GraphCanvas({
 
   /**
    * @function handleMouseDown
-   * @description 마우스 버튼을 눌렀을 때 브러싱 시작.
+   * @description Start brushing on mousedown
    */
   const handleMouseDown = (e: React.MouseEvent<HTMLCanvasElement>): void => {
     if (!canvasRef.current) return;
@@ -421,7 +420,7 @@ function GraphCanvas({
 
   /**
    * @function handleMouseUp
-   * @description 마우스 버튼을 뗐을 때 브러싱 종료 및 선택된 범위 전달.
+   * @description End brushing on mouseup and emit selected range
    */
   const handleMouseUp = (e: React.MouseEvent<HTMLCanvasElement>): void => {
     if (!isBrushing) return;
@@ -432,20 +431,20 @@ function GraphCanvas({
       if (!xScale) return;
       const pixelMin = Math.min(brushStart, brushEnd);
       const pixelMax = Math.max(brushStart, brushEnd);
-      // 픽셀 좌표를 D3 스케일의 역함수(invert)를 사용해 시간 값으로 변환
+      // Convert pixel coordinates back to time using scale.invert
       const tMin = xScale.invert(pixelMin);
       const tMax = xScale.invert(pixelMax);
 
-      // 부모 컴포넌트에 선택된 시간 범위 전달
+      // Notify parent of selected time range
       if (onBrushSelect) {
         onBrushSelect(Math.floor(tMin), Math.floor(tMax));
       }
     } else if (brushStart !== null && brushEnd !== null && Math.abs(brushStart - brushEnd) < 5) {
-      // 단순 클릭 (드래그 거리가 5px 이하인 경우)
+      // Treat as click when drag distance is ≤ 5px
       handleCanvasClick(e);
     }
 
-    // 브러싱 상태 초기화
+    // Reset brushing state
     setBrushStart(null);
     setBrushEnd(null);
     drawAll(null);
@@ -453,7 +452,7 @@ function GraphCanvas({
 
   /**
    * @function handleCanvasClick
-   * @description 캔버스 클릭 이벤트 처리 - 클릭된 이벤트를 찾아서 부모에 전달
+   * @description Canvas click handler - find nearest event and notify parent
    */
   const handleCanvasClick = (e: React.MouseEvent<HTMLCanvasElement>): void => {
     if (!canvasRef.current || !onEventClick) return;
@@ -465,11 +464,11 @@ function GraphCanvas({
     const yScale = yScaleRef.current;
     if (!xScale || !yScale) return;
 
-    // 마우스 위치에서 가장 가까운 이벤트 찾기 (hit detection)
+    // Nearest event hit detection
     let foundEvent: CanvasEvent | null = null;
-    let minDist = 10; // 10px 이내의 객체만 감지
+    let minDist = 10; // only detect within 10px
 
-    // 먼저 step 이벤트들 확인
+    // Check step events first
     const selectedStepTypes = new Set(selectedSteps);
     const [d0, d1] = xScale.domain();
 
@@ -485,7 +484,7 @@ function GraphCanvas({
       const dist = Math.sqrt((mouseX - x) ** 2 + (mouseY - y) ** 2);
       if (dist < minDist) {
         minDist = dist;
-        // step 이벤트를 CanvasEvent 형태로 변환
+        // convert step to CanvasEvent shape
         const matchingCanvasEvent = data.find(
           (event) =>
             event.type === step.type &&
@@ -498,7 +497,7 @@ function GraphCanvas({
       }
     }
 
-    // Arrow 이벤트들도 확인
+    // Check arrow events as well
     const selectedMsgTypes = new Set(
       p2pEvents.filter((event) => selectedEvents.includes(event.label)).map((event) => event.type)
     );
@@ -514,7 +513,7 @@ function GraphCanvas({
       const y1 = yScale(ar.fromNode)! + yScale.bandwidth() / 2;
       const y2 = yScale(ar.toNode)! + yScale.bandwidth() / 2;
 
-      // 점과 선분 사이의 최단 거리 계산
+      // shortest distance from point to segment
       const l2 = (x2 - x1) ** 2 + (y2 - y1) ** 2;
       let t = ((mouseX - x1) * (x2 - x1) + (mouseY - y1) * (y2 - y1)) / l2;
       t = Math.max(0, Math.min(1, t));
@@ -524,7 +523,7 @@ function GraphCanvas({
 
       if (dist < minDist) {
         minDist = dist;
-        // arrow 이벤트를 CanvasEvent 형태로 변환
+        // convert arrow to CanvasEvent shape
         const matchingCanvasEvent = data.find(
           (event) => event.type === ar.type && Math.abs(event.timestamp.getTime() - ar.timestamp.getTime()) < 1000
         );
@@ -534,7 +533,7 @@ function GraphCanvas({
       }
     }
 
-    // 찾은 이벤트가 있으면 부모에게 전달
+    // notify parent if an event is found
     if (foundEvent) {
       onEventClick(foundEvent);
     }
@@ -542,7 +541,7 @@ function GraphCanvas({
 
   /**
    * @function onResize
-   * @description 창 크기 변경 시 캔버스 크기를 재설정하고 스케일을 업데이트하는 콜백 함수.
+   * @description Resize handler: reset canvas size and update scales
    */
   const onResize = useCallback(() => {
     const canvasEl = canvasRef.current;
@@ -552,17 +551,17 @@ function GraphCanvas({
     if (!context) return;
     contextRef.current = context;
 
-    // 캔버스 크기 설정 (DPR 고려)
+    // Set canvas size (consider DPR)
     const { width, height } = canvasEl.getBoundingClientRect();
     const dpr = window.devicePixelRatio || 1;
     canvasEl.width = width * dpr;
     canvasEl.height = height * dpr;
-    context.scale(dpr, dpr); // 컨텍스트 스케일 조정
+    context.scale(dpr, dpr); // adjust context scale
 
     const innerWidth = width - margin.left - margin.right;
     const innerHeight = height - margin.top - margin.bottom;
 
-    // X축 스케일(시간) 설정 - Go tool trace style viewport
+    // X scale (time) - go tool trace style viewport
     let xMin, xMax;
     if (viewportStart !== undefined && viewportEnd !== undefined) {
       // Use viewport range for go tool trace style
@@ -580,21 +579,27 @@ function GraphCanvas({
     const xScale = d3.scaleLinear().domain([xMin, xMax]).range([0, innerWidth]);
     xScaleRef.current = xScale;
 
-    // Y축 스케일(노드) 설정
+    // Y scale (nodes)
     const nodeSet = new Set<string>();
     data.forEach((d) => {
       if (d.nodeId) nodeSet.add(d.nodeId);
-      if (d.senderPeerId) nodeSet.add(d.senderPeerId);
+      if ((d as any).senderPeerId) nodeSet.add((d as any).senderPeerId as string);
+      if ((d as any).recipientPeerId) nodeSet.add((d as any).recipientPeerId as string);
+      const asAny = d as any;
+      const sourcePeer = asAny.sourcePeer as string | undefined;
+      const recipientPeer = asAny.recipientPeer as string | undefined;
+      if (sourcePeer) nodeSet.add(sourcePeer.includes("@") ? sourcePeer.split("@")[0] : sourcePeer);
+      if (recipientPeer) nodeSet.add(recipientPeer.includes("@") ? recipientPeer.split("@")[0] : recipientPeer);
     });
-    const nodes = Array.from(nodeSet).sort(); // 노드 ID를 정렬하여 일관된 순서 유지
+    const nodes = Array.from(nodeSet).sort(); // stable ordering
     const yScale = d3.scaleBand<string>().domain(nodes).range([0, innerHeight]).padding(0.3);
     yScaleRef.current = yScale;
 
-    drawAll(null); // 모든 요소를 다시 그림
+    drawAll(null); // redraw everything
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [data, margin]); // data나 margin이 바뀔 때만 함수가 재생성됨
+  }, [data, margin]); // recompute only when data/margin changes
 
-  // 창 크기 변경 리스너 등록 및 해제
+  // Register/unregister resize listener
   useEffect(() => {
     window.addEventListener("resize", onResize);
     return () => {
@@ -602,11 +607,11 @@ function GraphCanvas({
     };
   }, [onResize]);
 
-  // 데이터나 필터, 뷰포트가 변경될 때 캔버스를 다시 그림
+  // Redraw when data, filters, or viewport changes
   useEffect(() => {
     if (!data || data.length === 0) return;
     const animationFrameId = requestAnimationFrame(() => {
-      onResize(); // 스케일을 다시 계산해야 할 수 있으므로 onResize 호출
+      onResize(); // re-evaluate scales as needed
       drawAll(null);
     });
     return () => cancelAnimationFrame(animationFrameId);
@@ -615,24 +620,29 @@ function GraphCanvas({
 
   /**
    * @effect
-   * @description `data` prop이 변경될 때 실행.
-   * Raw 이벤트 데이터를 시각화에 적합한 `arrows`와 `points` 형태로 가공하여 ref에 저장.
-   * 이 과정을 통해 렌더링 시 매번 데이터를 계산하는 것을 방지.
+   * @description When `data` changes, preprocess into `arrows` and `points` and store in refs
    */
   useEffect(() => {
     if (!data || data.length === 0) return;
 
-    // 1. 이벤트 유형별로 데이터 분리
-    const p2pEventData = data.filter((d) => d.type === "p2pVote" || d.type === "p2pBlockPart");
-    const stateChanges = data.filter((d) => d.type !== "p2pVote" && d.type !== "p2pBlockPart");
+    // 1) Split by event category
+    // Some backends use canonical types (e.g., "vote", "block_part") while others use
+    // umbrella types ("p2pVote", "p2pBlockPart"). Detect P2P events by presence of
+    // sender/receiver and timing fields rather than relying only on type string.
+    const isP2PEvent = (d: CanvasEvent) =>
+      !!(d.senderPeerId && d.nodeId && d.sentTime && d.receivedTime && (d.vote || d.part));
 
-    // 2. 'send_vote'와 'receive_vote'를 매칭하여 화살표 데이터 생성
+    const p2pEventData = data.filter((d) => (d.type === "p2pVote" || d.type === "p2pBlockPart") || isP2PEvent(d));
+    const stateChanges = data.filter((d) => !p2pEventData.includes(d));
+
+    // 2) Build arrows from both single-record P2P and send/receive pairs
     const arrows: CanvasArrowData[] = [];
+
+    // 2-a) Single-record P2P with both send/receive (p2pVote / p2pBlockPart)
     p2pEventData.forEach((e) => {
-      // p2p 이벤트에서 송신/수신 정보를 직접 추출합니다.
-      // 필수 데이터 (송신자, 수신자, 송수신 시간)가 없으면 건너뜁니다.
+      // Extract sender/receiver/timing directly; skip if any required field is missing
       if (!e.senderPeerId || !e.nodeId || !e.sentTime || !e.receivedTime) {
-        return;
+        return; // handled by pair-matching in 2-b
       }
 
       let height: number | undefined;
@@ -640,22 +650,22 @@ function GraphCanvas({
       let vote: CoreVote | undefined;
       let part: CorePart | undefined;
 
-      // 이벤트 유형에 따라 메시지 타입과 높이를 결정합니다.
-      if (e.type === "p2pVote" && e.vote) {
-        msgType = e.vote.type; // "prevote" 또는 "precommit"
+      // Determine message type and height from event content
+      if ((e.type === "p2pVote" || e.vote) && e.vote) {
+        msgType = e.vote.type; // "prevote" | "precommit"
         height = e.vote.height;
         vote = e.vote;
-      } else if (e.type === "p2pBlockPart" && e.part) {
-        msgType = "blockPart"; // StepLegend의 p2pEvents와 일치하는 타입
+      } else if ((e.type === "p2pBlockPart" || e.part) && e.part) {
+        msgType = "blockPart"; // matches StepLegend p2pEvents
         height = e.height;
         part = e.part;
       }
 
-      // 유효한 데이터가 있을 경우에만 화살표를 추가합니다.
+      // Push arrow only when data is valid
       if (msgType && height !== undefined) {
         arrows.push({
           canvasType: "arrow",
-          type: msgType, // 올바른 메시지 타입 할당
+          type: msgType, // normalized message type
           fromNode: e.senderPeerId,
           toNode: e.nodeId,
           height: height,
@@ -667,6 +677,120 @@ function GraphCanvas({
           part: part,
         });
       }
+    });
+
+    // 2-b) Match send/receive pairs to construct arrows (sendVote/receiveVote, block parts)
+    const voteSends = data.filter((d) => d.type === "sendVote" && d.vote);
+    const voteReceives = data.filter((d) => d.type === "receiveVote" && d.vote);
+
+    type VoteKey = string;
+    const makePeerId = (v: CanvasEvent): string | undefined => {
+      const asAny = v as any;
+      // normalize various field names
+      const from = asAny.senderPeerId || asAny.sourcePeerId || asAny.sourcePeer;
+      if (typeof from === "string") return from.includes("@") ? from.split("@")[0] : from;
+      return undefined;
+    };
+    const makeRecipientId = (v: CanvasEvent): string | undefined => {
+      const asAny = v as any;
+      const to = asAny.recipientPeerId || asAny.recipientPeer;
+      if (typeof to === "string") return to.includes("@") ? to.split("@")[0] : to;
+      return undefined;
+    };
+    const voteKey = (from: string | undefined, to: string | undefined, v: CanvasEvent): VoteKey | undefined => {
+      if (!v.vote) return undefined;
+      const { type, height, round, blockId } = v.vote;
+      if (!from || !to || !type || height === undefined || round === undefined || !blockId?.hash) return undefined;
+      return [from, to, type, height, round, blockId.hash].join("|");
+    };
+
+    const receiveIndex = new Map<VoteKey, CanvasEvent[]>();
+    voteReceives.forEach((r) => {
+      const from = makePeerId(r) || (r as any).senderPeerId || "";
+      const to = r.nodeId;
+      const key = voteKey(from, to, r);
+      if (key) {
+        if (!receiveIndex.has(key)) receiveIndex.set(key, []);
+        receiveIndex.get(key)!.push(r);
+      }
+    });
+    // Sort receives by time to pick the earliest after send
+    receiveIndex.forEach((arr) => arr.sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime()));
+
+    voteSends.forEach((s) => {
+      const from = s.nodeId;
+      const to = makeRecipientId(s);
+      const key = voteKey(from, to, s);
+      if (!key) return;
+      const candidates = receiveIndex.get(key) || [];
+      const sendTime = s.timestamp.getTime();
+      const recv = candidates.find((r) => r.timestamp.getTime() >= sendTime);
+      if (!recv) return;
+
+      arrows.push({
+        canvasType: "arrow",
+        type: s.vote!.type, // prevote | precommit
+        fromNode: from!,
+        toNode: to!,
+        height: s.vote!.height,
+        sendTime,
+        recvTime: recv.timestamp.getTime(),
+        latency: recv.timestamp.getTime() - sendTime,
+        timestamp: s.timestamp,
+        vote: s.vote,
+      });
+    });
+
+    // Block part send/receive matching
+    const partSends = data.filter((d) => (d as any).part && (d.type === "sendBlockPart" || (d as any).recipientPeerId || (d as any).recipientPeer));
+    const partReceives = data.filter((d) => (d as any).part && (d.type === "receiveBlockPart" || (d as any).senderPeerId || (d as any).sourcePeerId));
+
+    type PartKey = string;
+    const partKey = (from: string | undefined, to: string | undefined, v: CanvasEvent): PartKey | undefined => {
+      const p: any = (v as any).part;
+      const h = (v.height ?? (v as any).height) as number | undefined;
+      const idx: number | undefined = p?.index ?? p?.proof?.index;
+      if (!from || !to || h === undefined || idx === undefined) return undefined;
+      return [from, to, h, idx].join("|");
+    };
+
+    const partReceiveIndex = new Map<PartKey, CanvasEvent[]>();
+    partReceives.forEach((r) => {
+      const from = makePeerId(r) || (r as any).senderPeerId || "";
+      const to = r.nodeId;
+      const key = partKey(from, to, r);
+      if (key) {
+        if (!partReceiveIndex.has(key)) partReceiveIndex.set(key, []);
+        partReceiveIndex.get(key)!.push(r);
+      }
+    });
+    partReceiveIndex.forEach((arr) => arr.sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime()));
+
+    partSends.forEach((s) => {
+      const from = s.nodeId;
+      const to = makeRecipientId(s);
+      const key = partKey(from, to, s);
+      if (!key) return;
+      const candidates = partReceiveIndex.get(key) || [];
+      const sendTime = s.timestamp.getTime();
+      const recv = candidates.find((r) => r.timestamp.getTime() >= sendTime);
+      if (!recv) return;
+
+      const part: any = (s as any).part;
+      const h = (s.height ?? (s as any).height) as number | undefined;
+
+      arrows.push({
+        canvasType: "arrow",
+        type: "blockPart",
+        fromNode: from!,
+        toNode: to!,
+        height: h,
+        sendTime,
+        recvTime: recv.timestamp.getTime(),
+        latency: recv.timestamp.getTime() - sendTime,
+        timestamp: s.timestamp,
+        part,
+      });
     });
 
     const points: StateChangePoint[] = [];
@@ -693,12 +817,12 @@ function GraphCanvas({
       });
     });
 
-    // 가공된 데이터를 ref에 저장
+    // Save processed data into refs
     arrowDataRef.current = arrows;
     pointDataRef.current = points;
   }, [data]);
 
-  // JSX 렌더링
+  // JSX render
   return (
     <div style={{ position: "relative", width: "100%", height: "100%" }}>
       <canvas
@@ -710,7 +834,7 @@ function GraphCanvas({
           display: "block",
           borderRadius: "8px",
         }}
-        // 마우스 이벤트 핸들러 등록
+        // Mouse event handlers
         onMouseMove={handleMouseMove}
         onMouseLeave={handleMouseLeave}
         onMouseDown={handleMouseDown}

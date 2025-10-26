@@ -61,7 +61,7 @@ export default function StepLegend({
   const isCtrlDown = useRef(false);
   const dragStart = useRef<{ x: number; y: number } | null>(null);
 
-  // 항목 ref 리스트
+  // Item refs
   const stepRefs = useRef<Map<string, HTMLLIElement>>(new Map());
   const eventRefs = useRef<Map<string, HTMLLIElement>>(new Map());
 

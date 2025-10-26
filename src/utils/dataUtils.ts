@@ -1,61 +1,51 @@
 export function processApiEvents(apiData: ApiEventResponse[] | unknown): { events: CanvasEvent[]; nodes: string[] } {
   const nodeSet = new Set<string>();
 
-  // Normalize to an array of ApiEventResponse
-  let eventsArray: ApiEventResponse[] = [];
+  // Normalize to an array of ApiEventResponse (but keep unknown fields intact)
+  let eventsArray: any[] = [];
   if (Array.isArray(apiData)) {
-    eventsArray = apiData as ApiEventResponse[];
+    eventsArray = apiData as any[];
   } else if (
     apiData &&
     typeof apiData === "object" &&
     "data" in apiData &&
     Array.isArray((apiData as { data: unknown }).data)
   ) {
-    eventsArray = (apiData as { data: ApiEventResponse[] }).data;
+    eventsArray = (apiData as { data: any[] }).data;
   } else if (
     apiData &&
     typeof apiData === "object" &&
     "events" in apiData &&
     Array.isArray((apiData as { events: unknown }).events)
   ) {
-    eventsArray = (apiData as { events: ApiEventResponse[] }).events;
+    eventsArray = (apiData as { events: any[] }).events;
   } else {
     console.warn("Unexpected API response format:", apiData);
     return { events: [], nodes: [] };
   }
 
   const events: CanvasEvent[] =
-    eventsArray.map((item: ApiEventResponse) => {
+    eventsArray?.map((raw) => {
+      const item = raw as ApiEventResponse & Record<string, any>;
       if (item.nodeId) nodeSet.add(item.nodeId);
-      if (item.senderPeerId) nodeSet.add(item.senderPeerId);
+      if ((item as any).senderPeerId) nodeSet.add((item as any).senderPeerId as string);
+      if ((item as any).recipientPeerId) nodeSet.add((item as any).recipientPeerId as string);
+      // Also handle cases where only peer strings are present (e.g., "<peerId>@ip:port")
+      const sourcePeer = (item as any).sourcePeer as string | undefined;
+      const recipientPeer = (item as any).recipientPeer as string | undefined;
+      if (sourcePeer) nodeSet.add(sourcePeer.includes("@") ? sourcePeer.split("@")[0] : sourcePeer);
+      if (recipientPeer) nodeSet.add(recipientPeer.includes("@") ? recipientPeer.split("@")[0] : recipientPeer);
 
-      const legacyType = (item as unknown as { type?: string }).type;
-      const type = item.eventType ?? legacyType ?? "unknown";
-
+      // Preserve all backend fields (including isOurTurn, duration, step, nextStep...)
+      // Prefer canonical eventType, fallback to legacy type
       const frontendEvent: CanvasEvent = {
-        type,
+        ...(item as unknown as Record<string, any>),
+        type: (item as any).eventType ?? (item as any).type ?? "unknown",
         timestamp: new Date(item.timestamp),
-        nodeId: item.nodeId,
-        validatorAddress: item.validatorAddress,
-        vote: item.vote,
-        proposal: item.proposal,
-        part: item.part,
-        height: item.height,
-        round: item.round,
-        currentHeight: item.currentHeight,
-        currentRound: item.currentRound,
-        currentStep: item.currentStep,
-        hash: item.hash,
-        proposer: item.proposer,
-        status: item.status,
-        senderPeerId: item.senderPeerId,
-        sentTime: item.sentTime,
-        receivedTime: item.receivedTime,
-        latency: item.latency,
-      };
+      } as CanvasEvent;
 
       return frontendEvent;
-    });
+    }) || [];
 
   return { events, nodes: Array.from(nodeSet) };
 }
