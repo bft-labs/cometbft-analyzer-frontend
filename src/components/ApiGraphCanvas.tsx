@@ -584,7 +584,13 @@ function GraphCanvas({
     const nodeSet = new Set<string>();
     data.forEach((d) => {
       if (d.nodeId) nodeSet.add(d.nodeId);
-      if (d.senderPeerId) nodeSet.add(d.senderPeerId);
+      if ((d as any).senderPeerId) nodeSet.add((d as any).senderPeerId as string);
+      if ((d as any).recipientPeerId) nodeSet.add((d as any).recipientPeerId as string);
+      const asAny = d as any;
+      const sourcePeer = asAny.sourcePeer as string | undefined;
+      const recipientPeer = asAny.recipientPeer as string | undefined;
+      if (sourcePeer) nodeSet.add(sourcePeer.includes("@") ? sourcePeer.split("@")[0] : sourcePeer);
+      if (recipientPeer) nodeSet.add(recipientPeer.includes("@") ? recipientPeer.split("@")[0] : recipientPeer);
     });
     const nodes = Array.from(nodeSet).sort(); // 노드 ID를 정렬하여 일관된 순서 유지
     const yScale = d3.scaleBand<string>().domain(nodes).range([0, innerHeight]).padding(0.3);
@@ -623,16 +629,24 @@ function GraphCanvas({
     if (!data || data.length === 0) return;
 
     // 1. 이벤트 유형별로 데이터 분리
-    const p2pEventData = data.filter((d) => d.type === "p2pVote" || d.type === "p2pBlockPart");
-    const stateChanges = data.filter((d) => d.type !== "p2pVote" && d.type !== "p2pBlockPart");
+    // Some backends use canonical types (e.g., "vote", "block_part") while others use
+    // umbrella types ("p2pVote", "p2pBlockPart"). Detect P2P events by presence of
+    // sender/receiver and timing fields rather than relying only on type string.
+    const isP2PEvent = (d: CanvasEvent) =>
+      !!(d.senderPeerId && d.nodeId && d.sentTime && d.receivedTime && (d.vote || d.part));
 
-    // 2. 'send_vote'와 'receive_vote'를 매칭하여 화살표 데이터 생성
+    const p2pEventData = data.filter((d) => (d.type === "p2pVote" || d.type === "p2pBlockPart") || isP2PEvent(d));
+    const stateChanges = data.filter((d) => !p2pEventData.includes(d));
+
+    // 2. 매칭된 송수신 기반 화살표와, 단일 레코드(p2p) 기반 화살표를 모두 생성
     const arrows: CanvasArrowData[] = [];
+
+    // 2-a. 단일 레코드에 송수신 정보가 모두 있는 경우 (p2pVote / p2pBlockPart 등)
     p2pEventData.forEach((e) => {
       // p2p 이벤트에서 송신/수신 정보를 직접 추출합니다.
       // 필수 데이터 (송신자, 수신자, 송수신 시간)가 없으면 건너뜁니다.
       if (!e.senderPeerId || !e.nodeId || !e.sentTime || !e.receivedTime) {
-        return;
+        return; // 매칭 로직(2-b)에서 처리
       }
 
       let height: number | undefined;
@@ -641,11 +655,11 @@ function GraphCanvas({
       let part: CorePart | undefined;
 
       // 이벤트 유형에 따라 메시지 타입과 높이를 결정합니다.
-      if (e.type === "p2pVote" && e.vote) {
+      if ((e.type === "p2pVote" || e.vote) && e.vote) {
         msgType = e.vote.type; // "prevote" 또는 "precommit"
         height = e.vote.height;
         vote = e.vote;
-      } else if (e.type === "p2pBlockPart" && e.part) {
+      } else if ((e.type === "p2pBlockPart" || e.part) && e.part) {
         msgType = "blockPart"; // StepLegend의 p2pEvents와 일치하는 타입
         height = e.height;
         part = e.part;
@@ -667,6 +681,120 @@ function GraphCanvas({
           part: part,
         });
       }
+    });
+
+    // 2-b. send/receive 쌍으로 주어지는 이벤트를 매칭하여 화살표 생성 (sendVote/receiveVote, block parts 등)
+    const voteSends = data.filter((d) => d.type === "sendVote" && d.vote);
+    const voteReceives = data.filter((d) => d.type === "receiveVote" && d.vote);
+
+    type VoteKey = string;
+    const makePeerId = (v: CanvasEvent): string | undefined => {
+      const asAny = v as any;
+      // normalize various field names
+      const from = asAny.senderPeerId || asAny.sourcePeerId || asAny.sourcePeer;
+      if (typeof from === "string") return from.includes("@") ? from.split("@")[0] : from;
+      return undefined;
+    };
+    const makeRecipientId = (v: CanvasEvent): string | undefined => {
+      const asAny = v as any;
+      const to = asAny.recipientPeerId || asAny.recipientPeer;
+      if (typeof to === "string") return to.includes("@") ? to.split("@")[0] : to;
+      return undefined;
+    };
+    const voteKey = (from: string | undefined, to: string | undefined, v: CanvasEvent): VoteKey | undefined => {
+      if (!v.vote) return undefined;
+      const { type, height, round, blockId } = v.vote;
+      if (!from || !to || !type || height === undefined || round === undefined || !blockId?.hash) return undefined;
+      return [from, to, type, height, round, blockId.hash].join("|");
+    };
+
+    const receiveIndex = new Map<VoteKey, CanvasEvent[]>();
+    voteReceives.forEach((r) => {
+      const from = makePeerId(r) || (r as any).senderPeerId || "";
+      const to = r.nodeId;
+      const key = voteKey(from, to, r);
+      if (key) {
+        if (!receiveIndex.has(key)) receiveIndex.set(key, []);
+        receiveIndex.get(key)!.push(r);
+      }
+    });
+    // Sort receives by time to pick the earliest after send
+    receiveIndex.forEach((arr) => arr.sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime()));
+
+    voteSends.forEach((s) => {
+      const from = s.nodeId;
+      const to = makeRecipientId(s);
+      const key = voteKey(from, to, s);
+      if (!key) return;
+      const candidates = receiveIndex.get(key) || [];
+      const sendTime = s.timestamp.getTime();
+      const recv = candidates.find((r) => r.timestamp.getTime() >= sendTime);
+      if (!recv) return;
+
+      arrows.push({
+        canvasType: "arrow",
+        type: s.vote!.type, // prevote | precommit
+        fromNode: from!,
+        toNode: to!,
+        height: s.vote!.height,
+        sendTime,
+        recvTime: recv.timestamp.getTime(),
+        latency: recv.timestamp.getTime() - sendTime,
+        timestamp: s.timestamp,
+        vote: s.vote,
+      });
+    });
+
+    // Block part send/receive matching
+    const partSends = data.filter((d) => (d as any).part && (d.type === "sendBlockPart" || (d as any).recipientPeerId || (d as any).recipientPeer));
+    const partReceives = data.filter((d) => (d as any).part && (d.type === "receiveBlockPart" || (d as any).senderPeerId || (d as any).sourcePeerId));
+
+    type PartKey = string;
+    const partKey = (from: string | undefined, to: string | undefined, v: CanvasEvent): PartKey | undefined => {
+      const p: any = (v as any).part;
+      const h = (v.height ?? (v as any).height) as number | undefined;
+      const idx: number | undefined = p?.index ?? p?.proof?.index;
+      if (!from || !to || h === undefined || idx === undefined) return undefined;
+      return [from, to, h, idx].join("|");
+    };
+
+    const partReceiveIndex = new Map<PartKey, CanvasEvent[]>();
+    partReceives.forEach((r) => {
+      const from = makePeerId(r) || (r as any).senderPeerId || "";
+      const to = r.nodeId;
+      const key = partKey(from, to, r);
+      if (key) {
+        if (!partReceiveIndex.has(key)) partReceiveIndex.set(key, []);
+        partReceiveIndex.get(key)!.push(r);
+      }
+    });
+    partReceiveIndex.forEach((arr) => arr.sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime()));
+
+    partSends.forEach((s) => {
+      const from = s.nodeId;
+      const to = makeRecipientId(s);
+      const key = partKey(from, to, s);
+      if (!key) return;
+      const candidates = partReceiveIndex.get(key) || [];
+      const sendTime = s.timestamp.getTime();
+      const recv = candidates.find((r) => r.timestamp.getTime() >= sendTime);
+      if (!recv) return;
+
+      const part: any = (s as any).part;
+      const h = (s.height ?? (s as any).height) as number | undefined;
+
+      arrows.push({
+        canvasType: "arrow",
+        type: "blockPart",
+        fromNode: from!,
+        toNode: to!,
+        height: h,
+        sendTime,
+        recvTime: recv.timestamp.getTime(),
+        latency: recv.timestamp.getTime() - sendTime,
+        timestamp: s.timestamp,
+        part,
+      });
     });
 
     const points: StateChangePoint[] = [];
